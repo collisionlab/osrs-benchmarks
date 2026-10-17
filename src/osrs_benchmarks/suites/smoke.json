@@ -1,9 +1,7 @@
 {
-  "description": "A quick check that a revision builds and runs: the smoke-tier routes, one repetition.",
-  "tier": "smoke",
-  "profiles": ["early", "mid", "end", "maxed"],
+  "description": "A quick check that a revision builds and runs: the canonical smoke tier, once.",
+  "scenarios": [{"suite": "canonical", "tier": "smoke"}],
+  "warmup": [],
   "backends": ["legacy", "astar"],
-  "repetitions": 1,
-  "warmup": false,
-  "account_clock_minutes": 100000000
+  "repetitions": 1
 }

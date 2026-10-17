@@ -1,4 +1,4 @@
-"""Compare two run directories: per-case speed and any change in what the routes found."""
+"""Compare two run directories: per-scenario speed and any change in what the scenarios found."""
 import math
 import statistics
 from collections import defaultdict
@@ -10,10 +10,10 @@ THRESHOLD = 0.10
 
 
 def by_case(observations):
-    """{(backend, route, profile): (median total_ns or None, outcomes, path costs)}"""
+    """{(backend, scenario suite, scenario): (median total_ns or None, outcomes, path costs)}"""
     grouped = defaultdict(list)
     for row in observations:
-        grouped[(row["backend"], row["route_id"], row["profile"])].append(row)
+        grouped[(row["backend"], row["scenario_suite"], row["scenario"])].append(row)
     result = {}
     for key, rows in grouped.items():
         times = [r["total_ns"] for r in rows if r["outcome"] != "failed"]
@@ -23,43 +23,65 @@ def by_case(observations):
     return result
 
 
+def summarise(keys, base, cand):
+    """(ratios, changed) over keys: time ratios of cases both runs timed, and result changes."""
+    ratios, changed = [], []
+    for key in keys:
+        (bt, bo, bc), (ct, co, cc) = base[key], cand[key]
+        if (bo, bc) != (co, cc):
+            changed.append((key, bo, bc, co, cc))
+        if bt and ct:
+            ratios.append((ct / bt, key, bt, ct))
+    return ratios, changed
+
+
+def row(label, keys, ratios, changed):
+    geomean = math.exp(sum(math.log(r) for r, *_ in ratios) / len(ratios)) if ratios else float("nan")
+    faster = sum(1 for r, *_ in ratios if r < 1 - THRESHOLD)
+    slower = sum(1 for r, *_ in ratios if r > 1 + THRESHOLD)
+    return f"| {label} | {len(keys)} | {percent(geomean)} | {faster} | {slower} | {len(changed)} |"
+
+
+def describe_run(run):
+    label = f", {run['label']}" if run.get("label") else ""
+    return (f"tooling `{run['tooling_commit'][:12]}`, plugin `{run['plugin_commit'][:12]}` "
+            f"({run['suite']}, {run['runner']}, {run.get('trigger', '')}{label})")
+
+
 def compare(baseline_dir, candidate_dir, top=10):
     """A Markdown report."""
     base_run, _, base_rows = load(baseline_dir)
     cand_run, _, cand_rows = load(candidate_dir)
     base, cand = by_case(base_rows), by_case(cand_rows)
-    lines = [
-        f"Baseline: tooling `{base_run['tooling_commit'][:12]}`, plugin `{base_run['plugin_commit'][:12]}` "
-        f"({base_run['suite']}, {base_run['runner']})",
-        f"Candidate: tooling `{cand_run['tooling_commit'][:12]}`, plugin `{cand_run['plugin_commit'][:12]}` "
-        f"({cand_run['suite']}, {cand_run['runner']})",
-        "",
-    ]
+    lines = [f"Baseline: {describe_run(base_run)}", f"Candidate: {describe_run(cand_run)}", ""]
     if base_run["suite_sha256"] != cand_run["suite_sha256"]:
-        lines += ["The runs used different suite definitions, so only shared cases are compared.", ""]
-    lines += ["| backend | cases | geomean time | faster >10% | slower >10% | result changes |",
+        lines += ["The runs used different suite definitions, so only shared scenarios are compared.", ""]
+    differences = [f"{field} {base_run.get(field)} vs {cand_run.get(field)}"
+                   for field in ("runner", "cpu_governor", "cpu_boost", "kernel")
+                   if base_run.get(field) != cand_run.get(field)]
+    if differences:
+        lines += [f"The machines differed ({'; '.join(differences)}), so times are not comparable.", ""]
+    header = ["| {} | scenarios | geomean time | faster >10% | slower >10% | result changes |",
               "|---|---:|---:|---:|---:|---:|"]
+    shared = base.keys() & cand.keys()
+    lines += [header[0].format("backend"), header[1]]
     details = []
-    for backend in sorted({k[0] for k in base} & {k[0] for k in cand}):
-        keys = sorted(k for k in base.keys() & cand.keys() if k[0] == backend)
-        ratios, changed = [], []
-        for key in keys:
-            (bt, bo, bc), (ct, co, cc) = base[key], cand[key]
-            if (bo, bc) != (co, cc):
-                changed.append((key, bo, bc, co, cc))
-            if bt and ct:
-                ratios.append((ct / bt, key, bt, ct))
-        geomean = math.exp(sum(math.log(r) for r, *_ in ratios) / len(ratios)) if ratios else float("nan")
-        faster = sum(1 for r, *_ in ratios if r < 1 - THRESHOLD)
-        slower = sum(1 for r, *_ in ratios if r > 1 + THRESHOLD)
-        lines.append(f"| {backend} | {len(keys)} | {percent(geomean)} | {faster} | {slower} | {len(changed)} |")
+    for backend in sorted({k[0] for k in shared}):
+        keys = sorted(k for k in shared if k[0] == backend)
+        ratios, changed = summarise(keys, base, cand)
+        lines.append(row(backend, keys, ratios, changed))
+        per_suite = ["", f"By suite ({backend}):", "", header[0].format("suite"), header[1]]
+        for suite in sorted({k[1] for k in keys}):
+            suite_keys = [k for k in keys if k[1] == suite]
+            per_suite.append(row(suite, suite_keys, *summarise(suite_keys, base, cand)))
+        details += per_suite
         worst = sorted(ratios, reverse=True)[:top]
         if worst:
-            details += ["", f"Slowest changes ({backend}):", "", "| route | profile | baseline | candidate | change |",
+            details += ["", f"Slowest changes ({backend}):", "", "| suite | scenario | baseline | candidate | change |",
                         "|---|---|---:|---:|---:|"]
             details += [f"| {k[1]} | {k[2]} | {ms(bt)} | {ms(ct)} | {percent(r)} |" for r, k, bt, ct in worst]
         if changed:
-            details += ["", f"Result changes ({backend}):", "", "| route | profile | baseline | candidate |",
+            details += ["", f"Result changes ({backend}):", "", "| suite | scenario | baseline | candidate |",
                         "|---|---|---|---|"]
             details += [f"| {k[1]} | {k[2]} | {describe(bo, bc)} | {describe(co, cc)} |"
                         for k, bo, bc, co, cc in changed]

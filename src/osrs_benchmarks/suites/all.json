@@ -1,0 +1,7 @@
+{
+  "description": "The nightly suite: every scenario of every tooling suite, on both pathfinders.",
+  "scenarios": [{"suite": "*"}],
+  "warmup": [{"suite": "canonical", "tier": "smoke"}],
+  "backends": ["legacy", "astar"],
+  "repetitions": 3
+}
