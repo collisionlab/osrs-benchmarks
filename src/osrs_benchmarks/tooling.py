@@ -7,6 +7,12 @@ import time
 from pathlib import Path
 
 OUTCOMES = {"ok", "unexpected", "failed"}
+# Typed columns copied from the result's memory and world objects (tooling#39 on); absent
+# fields are null. The whole objects are kept as memory_json and world_json.
+MEMORY_FIELDS = ("heap_after_prepare_bytes", "heap_after_run_bytes", "peak_heap_bytes", "peak_resident_bytes",
+                 "run_gc_count", "run_gc_ms", "static_build_allocated_bytes")
+WORLD_FIELDS = ("transports", "transport_origins", "search_tiles", "sites", "routing_components",
+                "reachable_banks", "crossings", "sparse_vertices", "sparse_edges")
 
 
 class Failed(Exception):
@@ -78,6 +84,11 @@ def execute(checkout, gradle_home, manifest, directory, run_id):
         "java_vm": f'{metadata["runtime"]["vm_name"]} {metadata["runtime"]["vm_version"]}',
         "routing_static_build_ms": metadata.get("routing_static_build_ms"),
     }
+    memory, world = metadata.get("memory", {}), metadata.get("world", {})
+    execution.update({f: memory.get(f) for f in MEMORY_FIELDS})
+    execution.update({f: world.get(f) for f in WORLD_FIELDS})
+    execution["memory_json"] = json.dumps(memory, sort_keys=True) if memory else ""
+    execution["world_json"] = json.dumps(world, sort_keys=True) if world else ""
     fields = ("scenario", "category", "profile", "repetition", "outcome", "expected_reachable",
               "reachable", "path_cost", "path_length", "total_ns", "termination_reason", "failure")
     observations = []
@@ -86,5 +97,5 @@ def execute(checkout, gradle_home, manifest, directory, run_id):
             raise Failed(f"unknown outcome {r['outcome']!r}")
         # "suite" here is the scenario's tooling suite; a run's suite is the benchmark suite.
         observations.append({"scenario_suite": r["suite"], "check_message": r["check"],
-                             **{f: r[f] for f in fields}})
+                             "allocated_bytes": r.get("allocated_bytes"), **{f: r[f] for f in fields}})
     return execution, observations
