@@ -96,8 +96,8 @@ Every decision (started, finished, skipped and why, failed and why) is a row in
 | table | one row per |
 |---|---|
 | `runs` | run: revisions, suite, trigger and label, harness and machine |
-| `executions` | backend in a run: status, JVM, wall time |
-| `observations` | measured query: scenario suite, scenario, category, profile, repetition, outcome, path cost and length, `total_ns` |
+| `executions` | backend in a run: status, JVM, wall time; memory (heap retained after preparing and after the run, peak heap and resident set, GC, what the A* static build allocated); the routing world (transports, and for A* search tiles, sites, routing components, crossings, sparse graph) |
+| `observations` | measured query: scenario suite, scenario, category, profile, repetition, outcome, path cost and length, `total_ns`, bytes allocated |
 | `runner_events` | thing the nightly runner did |
 
 A run's rows are inserted executions first and the `runs` row last, so a `runs` row means the run
