@@ -1,0 +1,9 @@
+{
+  "description": "The nightly suite: every standard-tier route with every canonical account, on both pathfinders.",
+  "tier": "standard",
+  "profiles": ["early", "mid", "end", "maxed"],
+  "backends": ["legacy", "astar"],
+  "repetitions": 3,
+  "warmup": true,
+  "account_clock_minutes": 100000000
+}

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Opens a PR in collisionlab/infra moving its osrs-benchmarks flake input to the current main.
+# infra merges collisionlab-bot's pin/* PRs itself once its checks pass; the merge deploys ops, which
+# applies any new ClickHouse migrations.
+#
+#   scripts/pin-infra      (GH_TOKEN: collisionlab-bot, infra)
+set -euo pipefail
+
+work=$(mktemp -d)
+
+git clone -q --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/collisionlab/infra.git" "$work"
+cd "$work"
+if ! grep -q osrs-benchmarks flake.nix; then
+  echo "infra has no osrs-benchmarks input yet"
+  exit 0
+fi
+nix flake update osrs-benchmarks
+if git diff --quiet flake.lock; then
+  echo "infra already pins osrs-benchmarks main"
+  exit 0
+fi
+commit=$(jq -r .nodes[\"osrs-benchmarks\"].locked.rev flake.lock)
+branch="pin/osrs-benchmarks-${commit:0:12}"
+git switch -q -c "$branch"
+git -c user.name="collisionlab-bot" -c user.email="collisionlab-bot@users.noreply.github.com" \
+  commit -qam "Use osrs-benchmarks ${commit:0:12}"
+git push -q origin "$branch"
+gh pr create --repo collisionlab/infra --head "$branch" --title "Use osrs-benchmarks ${commit:0:12}" \
+  --body "Moves the \`osrs-benchmarks\` flake input to collisionlab/osrs-benchmarks@$commit."
