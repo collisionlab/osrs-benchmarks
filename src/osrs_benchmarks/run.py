@@ -22,7 +22,7 @@ def now():
     return datetime.now(timezone.utc)
 
 
-def run(suite, checkout, gradle_home, out_dir, runner, trigger, log=print):
+def run(suite, checkout, gradle_home, out_dir, runner, trigger, label="", log=print):
     """Run suite on checkout. Returns the run directory; raises tooling.Failed if it can't build."""
     run_id = str(uuid.uuid4())
     started = now()
@@ -33,17 +33,19 @@ def run(suite, checkout, gradle_home, out_dir, runner, trigger, log=print):
         f"plugin {checkout.plugin.commit[:12]}")
     log("building")
     tooling.build(checkout, gradle_home, directory / "build.log")
+    index = tooling.scenario_index(checkout, gradle_home, directory / "build.log")
+    cases = suites.select(suite.scenarios, index)
+    warmup = suites.select(suite.warmup, index) if suite.warmup else []
 
-    logical = suites.cases(suite, checkout.tooling_dir)
-    common = {"run_id": run_id, "started_at": timestamp(started), "runner": runner,
+    common = {"run_id": run_id, "started_at": timestamp(started), "runner": runner, "trigger": trigger,
               "suite": suite.name}
     executions, observations = [], []
     for backend in suite.backends:
-        log(f"running {backend}: {len(logical)} cases x {suite.repetitions}")
+        log(f"running {backend}: {len(cases)} scenarios x {suite.repetitions}, {len(warmup)} to warm up")
         execution = dict(common, backend=backend, status="ok", wall_seconds=0.0, java_version="",
                          java_vm="", routing_static_build_ms=None, failure="")
         try:
-            fields, rows = tooling.execute(checkout, gradle_home, suites.manifest(suite, backend, logical),
+            fields, rows = tooling.execute(checkout, gradle_home, suites.manifest(suite, backend, cases, warmup),
                                            directory / backend, run_id)
             execution.update(fields)
             observations += [dict(common, plugin_commit=checkout.plugin.commit, backend=backend, **row)
@@ -56,7 +58,7 @@ def run(suite, checkout, gradle_home, out_dir, runner, trigger, log=print):
     run_row = dict(
         common,
         finished_at=timestamp(now()),
-        trigger=trigger,
+        label=label,
         suite_sha256=suite.sha256,
         harness_version=VERSION,
         tooling_commit=checkout.tooling.commit,

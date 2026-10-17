@@ -7,14 +7,10 @@ import pytest
 from osrs_benchmarks import checkout, cli, clickhouse, compare, machine, run, suite
 
 
-def write_routes(tooling):
-    routes = [
-        {"id": "a", "tiers": ["smoke", "standard"]},
-        {"id": "b", "tiers": ["standard"], "negativeProfiles": ["early"]},
-    ]
-    path = tooling / suite.ROUTES
-    path.parent.mkdir(parents=True)
-    path.write_text(json.dumps(routes))
+INDEX = {
+    "canonical": [{"name": "a/early", "tiers": ["smoke", "standard"]}, {"name": "b/early", "tiers": ["standard"]}],
+    "routing-issues": [{"name": "issue 1", "tiers": []}],
+}
 
 
 def test_every_suite_loads():
@@ -23,18 +19,23 @@ def test_every_suite_loads():
         assert loaded.backends and loaded.repetitions >= 1
 
 
-def test_manifest_interleaves_repetitions_and_marks_negative_profiles(tmp_path):
-    write_routes(tmp_path)
-    standard = suite.load("standard")
-    cases = suite.cases(standard, tmp_path)
-    assert ("b", "early", False) in cases and ("b", "mid", True) in cases
-    assert len(cases) == 2 * len(standard.profiles)
-    manifest = suite.manifest(standard, "astar", cases)
-    assert manifest["project"] == "shortest-path-astar"
-    assert manifest["policy"]["adapter_args"] == {"algorithm": "astar"}
+def test_selectors_pick_suites_and_tiers():
+    assert suite.select([{"suite": "*"}], INDEX) == [("canonical", "a/early"), ("canonical", "b/early"),
+                                                     ("routing-issues", "issue 1")]
+    assert suite.select([{"suite": "canonical", "tier": "smoke"}], INDEX) == [("canonical", "a/early")]
+    with pytest.raises(SystemExit, match="no scenario suite"):
+        suite.select([{"suite": "missing"}], INDEX)
+
+
+def test_manifest_interleaves_repetitions():
+    everything = suite.load("all")
+    cases = suite.select(everything.scenarios, INDEX)
+    manifest = suite.manifest(everything, "astar", cases, [("canonical", "a/early")])
+    assert manifest["format_version"] == 2 and manifest["algorithm"] == "astar"
+    assert manifest["warmup"] == [{"suite": "canonical", "scenario": "a/early"}]
     repetitions = [c["repetition"] for c in manifest["cases"]]
     assert repetitions == sorted(repetitions)
-    assert len(manifest["cases"]) == len(cases) * standard.repetitions
+    assert len(manifest["cases"]) == len(cases) * everything.repetitions
 
 
 def test_suite_hash_tracks_its_definition(tmp_path):
@@ -62,15 +63,16 @@ def test_migrations_split_into_statements():
     assert (version, name) == (1, "initial")
     assert all(s.startswith("CREATE TABLE IF NOT EXISTS benchmarks.") for s in statements)
     assert len(statements) == 4
+    assert found[1][:2] == (2, "scenarios")
 
 
 def write_run(directory, times, costs=None):
     """A run directory with one observation per (backend, route) at the given total_ns."""
     directory.mkdir()
     rows = []
-    for (backend, route), ns in times.items():
-        rows.append({"backend": backend, "route_id": route, "profile": "mid", "repetition": 0,
-                     "outcome": "ok", "path_cost": (costs or {}).get(route, 10), "total_ns": ns})
+    for (backend, scenario), ns in times.items():
+        rows.append({"backend": backend, "scenario_suite": "canonical", "scenario": scenario, "repetition": 0,
+                     "outcome": "ok", "path_cost": (costs or {}).get(scenario, 10), "total_ns": ns})
     record = {"run": {"run_id": directory.name, "tooling_commit": "t" * 40, "plugin_commit": "p" * 40,
                       "suite": "smoke", "runner": "test", "suite_sha256": "x"}, "executions": []}
     (directory / "run.json").write_text(json.dumps(record))
@@ -83,7 +85,8 @@ def test_compare_reports_speed_and_result_changes(tmp_path):
     cand = write_run(tmp_path / "cand", {("astar", "a"): 200, ("astar", "b"): 100}, costs={"b": 11})
     report = compare.compare(base, cand)
     assert "| astar | 2 | +41.4% | 0 | 1 | 1 |" in report
-    assert "| b | mid | ok, cost 10 | ok, cost 11 |" in report
+    assert "| canonical | 2 | +41.4% | 0 | 1 | 1 |" in report
+    assert "| canonical | b | ok, cost 10 | ok, cost 11 |" in report
 
 
 class FakeClickHouse:
@@ -101,7 +104,7 @@ def nightly(tmp_path, monkeypatch, commits):
         tmp_path, tmp_path, revision(commits["tooling"]), revision(commits["plugin"])))
     monkeypatch.setattr(machine, "wait_quiet", lambda *a, **k: None)
 
-    def fake_run(s, c, gradle, out, runner, trigger, log):
+    def fake_run(s, c, gradle, out, runner, trigger, label, log):
         directory = write_run(Path(out) / f"run-{len(list(Path(out).iterdir()))}", {("astar", "a"): 1})
         record = json.loads((directory / "run.json").read_text())
         record["executions"] = [{"backend": "astar", "status": "ok"}]
@@ -141,3 +144,24 @@ def test_nightly_ingests_runs_left_from_an_earlier_night(tmp_path, monkeypatch):
     write_run(job.state / "results" / "left-over", {("astar", "a"): 1})
     job()
     assert {r["run_id"] for r in job.client.rows["runs"]} == {"left-over", "run-1"}
+
+
+def test_a_failed_upload_keeps_the_run_for_later(tmp_path, monkeypatch):
+    directory = write_run(tmp_path / "run", {("astar", "a"): 1})
+    args = cli.argparse.Namespace(clickhouse="http://127.0.0.1:9", user="u", password_file=None)
+    assert not cli.upload(args, directory)
+    assert not (directory / "ingested").exists()
+    fake = FakeClickHouse()
+    monkeypatch.setattr(cli, "client", lambda a: fake)
+    assert cli.upload(args, directory)
+    assert (directory / "ingested").exists() and len(fake.rows["runs"]) == 1
+
+
+def test_config_file_supplies_upload_defaults(tmp_path, monkeypatch):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"clickhouse": "http://ops:8123", "user": "runner_x", "runner": "x"}))
+    monkeypatch.setattr(cli, "CONFIG", path)
+    p = cli.argparse.ArgumentParser()
+    cli.add_upload_args(p, required=True)
+    a = p.parse_args([])
+    assert (a.clickhouse, a.user) == ("http://ops:8123", "runner_x")

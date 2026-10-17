@@ -1,9 +1,7 @@
 {
-  "description": "The nightly suite: every standard-tier route with every canonical account, on both pathfinders.",
-  "tier": "standard",
-  "profiles": ["early", "mid", "end", "maxed"],
+  "description": "The canonical corpus's standard tier: 135 routes with every canonical account.",
+  "scenarios": [{"suite": "canonical", "tier": "standard"}],
+  "warmup": [{"suite": "canonical", "tier": "smoke"}],
   "backends": ["legacy", "astar"],
-  "repetitions": 3,
-  "warmup": true,
-  "account_clock_minutes": 100000000
+  "repetitions": 3
 }
